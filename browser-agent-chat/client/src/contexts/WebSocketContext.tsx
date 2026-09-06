@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import type { ClientMessage, ServerMessage, AgentStatus, ChatMessage, Finding, Suggestion } from '../types';
+import { supabase } from '../lib/supabase';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 const HEARTBEAT_INTERVAL = 30_000;
@@ -50,6 +51,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const connectingRef = useRef(false);
   const lastScreenshotTimeRef = useRef<number>(0);
 
   const [connected, setConnected] = useState(false);
@@ -319,10 +321,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const startAgentRef = useRef(startAgent);
   startAgentRef.current = startAgent;
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+  const connect = useCallback(async () => {
+    if (connectingRef.current || wsRef.current?.readyState === WebSocket.CONNECTING || wsRef.current?.readyState === WebSocket.OPEN) return;
+    connectingRef.current = true;
 
-    const ws = new WebSocket(WS_URL);
+    let ws: WebSocket;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const protocols = session?.access_token ? ['bearer', session.access_token] : undefined;
+      ws = new WebSocket(WS_URL, protocols);
+    } catch (error) {
+      console.error('[WS] Failed to initialize authenticated connection:', error);
+      connectingRef.current = false;
+      reconnectTimeoutRef.current = setTimeout(() => void connect(), 3000);
+      return;
+    }
+    connectingRef.current = false;
 
     ws.onopen = () => {
       setConnected(true);
@@ -351,7 +365,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         heartbeatRef.current = null;
       }
       // Reconnect with backoff
-      reconnectTimeoutRef.current = setTimeout(connect, 3000);
+      reconnectTimeoutRef.current = setTimeout(() => void connect(), 3000);
     };
 
     ws.onerror = () => ws.close();
@@ -361,7 +375,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   // Connect on mount, cleanup on unmount
   useEffect(() => {
-    connect();
+    void connect();
 
     return () => {
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);

@@ -194,7 +194,7 @@ describe('sessionManager — recovery', () => {
 
     expect(result).toBe(true);
     expect(createAgent).toHaveBeenCalledWith(
-      expect.any(Function), 'http://localhost:19300', 'db-1', 'proj-1', undefined
+      expect.any(Function), 'http://localhost:19300', 'db-1', 'proj-1', 'https://example.com/dashboard'
     );
     expect(redisStore.setSession).toHaveBeenCalledWith('proj-1', { status: 'idle' });
     expect(redis.del).toHaveBeenCalledWith('session:lock:proj-1');

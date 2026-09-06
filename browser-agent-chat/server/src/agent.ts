@@ -14,6 +14,7 @@ import { detectLoginPage } from './login-detector.js';
 import { executeStandardLogin, verifyLoginSuccess } from './login-strategy.js';
 import { getCredentialForAgent, getCredential, decryptForInjection, pendingCredentialRequests, normalizeDomain } from './vault.js';
 import type { PlaintextSecret } from './types.js';
+import { assertPublicUrl, installBrowserUrlPolicy } from './url-policy.js';
 
 export interface AgentSession {
   agent: BrowserAgent;
@@ -73,6 +74,9 @@ export async function createAgent(
   broadcast({ type: 'status', status: 'working' });
   const timer = new StepTimer();
 
+  // Reject an unsafe initial destination before attaching it to Chromium.
+  if (url) await assertPublicUrl(url);
+
   // Load memory context for prompt injection
   const memoryContext = agentId ? await loadMemoryContext(agentId) : '';
   timer.step('load_memory');
@@ -84,7 +88,6 @@ export async function createAgent(
   broadcast({ type: 'thought', content: 'Connecting to browser via CDP...' });
 
   const agent = await startBrowserAgent({
-    ...(url ? { url } : {}),
     narrate: false,
     llm: {
       provider: 'claude-code',
@@ -99,11 +102,17 @@ export async function createAgent(
 
   timer.step('start_browser_agent');
   const connector = agent.require(BrowserConnector);
+  const page = connector.getHarness().page;
+
+  // Context-wide routing covers the initial request, redirects, popups, and
+  // subresources created by later agent actions.
+  await installBrowserUrlPolicy(page.context());
+  // Never stream a page left behind in a reused/recovered Chromium process.
+  await page.goto('about:blank');
 
   // Create CDP session for CSP bypass and screencast
   let cdpSession: any = null;
   try {
-    const page = connector.getHarness().page;
     cdpSession = await page.context().newCDPSession(page);
     await cdpSession.send('Page.setBypassCSP', { enabled: true });
     console.log('[AGENT] CSP bypass enabled via CDP');
@@ -139,18 +148,13 @@ export async function createAgent(
     console.warn('[AGENT] Failed to set default viewport:', err);
   }
 
-  // When reusing a warm-pool browser via CDP, magnitude may not navigate to the
-  // target URL. Force navigation if the current page doesn't match.
+  // Navigate only after context-wide request interception is active.
   if (url) {
-    const page = connector.getHarness().page;
-    const current = page.url();
-    if (current !== url && !current.startsWith(url)) {
-      console.log(`[AGENT] Warm browser on ${current}, navigating to ${url}`);
-      try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      } catch (err) {
-        console.warn('[AGENT] Navigation to target URL failed:', err);
-      }
+    console.log(`[AGENT] Navigating to ${url}`);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+    } catch (err) {
+      console.warn('[AGENT] Navigation to target URL failed:', err);
     }
   }
 
