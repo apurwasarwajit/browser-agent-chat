@@ -27,6 +27,7 @@ import feedbackRouter from './routes/feedback.js';
 import { processFeedback } from './learning/pipeline.js';
 import { MIN_CLUSTER_RUNS } from './learning/extraction.js';
 import { initLearningJobs } from './learning/jobs.js';
+import { authenticateAccessToken } from './auth.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -77,13 +78,44 @@ app.use('/api/vault', vaultRouter);
 app.use('/api/agents/:id/credentials', agentCredentialsRouter);
 
 // WebSocket server
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols: protocols => protocols.has('bearer') ? 'bearer' : false,
+});
 
 // Track which agent each client is associated with
 const clientAgents = new Map<WebSocket, string>();
 
 // Track which user each client is associated with
 const clientUserIds = new Map<WebSocket, string>();
+
+function getWebSocketAccessToken(request: http.IncomingMessage): string | undefined {
+  const header = request.headers['sec-websocket-protocol'];
+  const protocols = (Array.isArray(header) ? header.join(',') : header ?? '')
+    .split(',')
+    .map(value => value.trim());
+  const bearerIndex = protocols.indexOf('bearer');
+  return bearerIndex >= 0 ? protocols[bearerIndex + 1] : undefined;
+}
+
+server.on('upgrade', async (request, socket, head) => {
+  try {
+    const userId = await authenticateAccessToken(getWebSocketAccessToken(request));
+    if (!userId) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, ws => {
+      clientUserIds.set(ws, userId);
+      wss.emit('connection', ws, request);
+    });
+  } catch (error) {
+    console.error('[WS] Upgrade authentication failed:', error);
+    socket.destroy();
+  }
+});
 
 // Track active tasks per agent
 const activeTasks = new Map<string, { taskId: string; stepCount: number; startedAt: number; prompt: string }>();
@@ -153,6 +185,13 @@ wss.on('connection', (ws: WebSocket) => {
     if (msg.type === 'start') {
       console.log('[START] Starting agent for:', msg.agentId);
 
+      const userId = clientUserIds.get(ws);
+      const agent = await getAgent(msg.agentId);
+      if (!userId || !agent || agent.user_id !== userId) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Agent not found' } as ServerMessage));
+        return;
+      }
+
       const prevAgentId = clientAgents.get(ws);
       if (prevAgentId && prevAgentId !== msg.agentId) {
         sessionManager.removeClient(prevAgentId, ws);
@@ -181,16 +220,6 @@ wss.on('connection', (ws: WebSocket) => {
       clientAgents.set(ws, msg.agentId);
 
       try {
-        const agent = await getAgent(msg.agentId);
-        if (!agent) {
-          clientAgents.delete(ws);
-          ws.send(JSON.stringify({ type: 'error', message: 'Agent not found' } as ServerMessage));
-          ws.send(JSON.stringify({ type: 'status', status: 'disconnected' } as ServerMessage));
-          return;
-        }
-
-        clientUserIds.set(ws, agent.user_id);
-
         // Ensure capacity before creating new browser
         await sessionManager.ensureCapacity();
 
@@ -283,6 +312,13 @@ wss.on('connection', (ws: WebSocket) => {
       const agentId = msg.agentId;
       console.log('[RESTART] Restarting agent:', agentId);
 
+      const userId = clientUserIds.get(ws);
+      const agent = await getAgent(agentId);
+      if (!userId || !agent || agent.user_id !== userId) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Agent not found' } as ServerMessage));
+        return;
+      }
+
       // Use beforeEvict hook for task cleanup (same as eviction path)
       await sessionManager.callBeforeEvictHook(agentId);
       await sessionManager.destroySession(agentId);
@@ -290,13 +326,6 @@ wss.on('connection', (ws: WebSocket) => {
       await sessionManager.ensureCapacity();
 
       try {
-        const agent = await getAgent(agentId);
-        if (!agent) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Agent not found' } as ServerMessage));
-          return;
-        }
-
-        clientUserIds.set(ws, agent.user_id);
         clientAgents.set(ws, agentId);
 
         const dbSessionId = await createSession(agent.id);

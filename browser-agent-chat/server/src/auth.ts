@@ -6,6 +6,14 @@ export interface AuthenticatedRequest extends Request {
   userEmail: string;
 }
 
+export async function authenticateAccessToken(accessToken?: string): Promise<string | null> {
+  if (!supabase) return 'dev-user';
+  if (!accessToken) return null;
+
+  const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+  return error || !user ? null : user.id;
+}
+
 export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!supabase) {
     // Dev mode: no auth required, use a placeholder user

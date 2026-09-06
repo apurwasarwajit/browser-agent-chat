@@ -358,9 +358,9 @@ export async function recoverSession(agentId: string): Promise<boolean> {
       try {
         const broadcastFn = makeBroadcast(agentId);
 
-        // Connect agent to existing browser — NO url (keep current page)
+        // Reload the persisted destination through the browser URL policy.
         const agentSession = await createAgent(
-          broadcastFn, session.cdpEndpoint, session.dbSessionId, agentId, undefined
+          broadcastFn, session.cdpEndpoint, session.dbSessionId, agentId, session.currentUrl || undefined
         );
         agents.set(agentId, agentSession);
         startAbsoluteTimeout(agentId);

@@ -7,6 +7,7 @@ import {
 } from '../db.js';
 import { supabase } from '../supabase.js';
 import type { CreateAgentRequest, AgentResponse, AgentListItem } from '../types.js';
+import { assertPublicUrl } from '../url-policy.js';
 
 const router = Router();
 
@@ -53,8 +54,16 @@ router.post('/', requireAuth, async (req, res) => {
     return;
   }
 
+  const normalizedUrl = normalizeUrl(body.url);
+  try {
+    await assertPublicUrl(normalizedUrl);
+  } catch {
+    res.status(400).json({ error: 'URL must resolve publicly and use HTTP(S) on its standard port' });
+    return;
+  }
+
   const encrypted = body.credentials ? encryptCredentials(body.credentials) : null;
-  const agent = await createAgent(userId, body.name, normalizeUrl(body.url), encrypted, body.context ?? null);
+  const agent = await createAgent(userId, body.name, normalizedUrl, encrypted, body.context ?? null);
 
   if (!agent) {
     res.status(500).json({ error: 'Failed to create agent' });
@@ -73,11 +82,21 @@ router.post('/', requireAuth, async (req, res) => {
   res.status(201).json(response);
 });
 
+// Every agent-scoped route below must operate on an agent owned by this user.
+router.use('/:id', requireAuth, async (req, res, next) => {
+  const { userId } = req as AuthenticatedRequest;
+  const agent = await getAgent(req.params.id as string);
+  if (!agent || agent.user_id !== userId) {
+    res.status(404).json({ error: 'Agent not found' });
+    return;
+  }
+  res.locals.agent = agent;
+  next();
+});
+
 // Get agent details
 router.get('/:id', requireAuth, async (req, res) => {
-  const agentId = req.params.id as string;
-  const agent = await getAgent(agentId);
-  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
+  const agent = res.locals.agent;
 
   const response: AgentResponse = {
     id: agent.id,
@@ -96,7 +115,16 @@ router.put('/:id', requireAuth, async (req, res) => {
   const agentId = req.params.id as string;
   const updates: Record<string, unknown> = {};
   if (req.body.name) updates.name = req.body.name;
-  if (req.body.url) updates.url = normalizeUrl(req.body.url);
+  if (req.body.url) {
+    const normalizedUrl = normalizeUrl(req.body.url);
+    try {
+      await assertPublicUrl(normalizedUrl);
+    } catch {
+      res.status(400).json({ error: 'URL must resolve publicly and use HTTP(S) on its standard port' });
+      return;
+    }
+    updates.url = normalizedUrl;
+  }
   if (req.body.context !== undefined) updates.context = req.body.context;
   if (req.body.credentials) updates.credentials = encryptCredentials(req.body.credentials);
 
