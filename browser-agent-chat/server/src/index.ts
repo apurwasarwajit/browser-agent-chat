@@ -22,7 +22,7 @@ import * as redisStore from './redisStore.js';
 import * as browserManager from './browserManager.js';
 import { createHeyGenToken, isHeyGenEnabled } from './heygen.js';
 import { initLangfuse, shutdownLangfuse, isLangfuseEnabled } from './langfuse.js';
-import type { ClientMessage, ServerMessage, ChatMessage } from './types.js';
+import { isClientMessage, type ServerMessage, type ChatMessage } from './types.js';
 import feedbackRouter from './routes/feedback.js';
 import { processFeedback } from './learning/pipeline.js';
 import { MIN_CLUSTER_RUNS } from './learning/extraction.js';
@@ -129,13 +129,15 @@ function makeChatMessage(type: ChatMessage['type'], content: string): ChatMessag
 wss.on('connection', (ws: WebSocket) => {
   console.log('Client connected');
 
-  ws.on('message', async (raw: Buffer) => {
-    let msg: ClientMessage;
+  const handleMessage = async (raw: Buffer): Promise<void> => {
+    let parsed: unknown;
     try {
-      msg = JSON.parse(raw.toString());
+      parsed = JSON.parse(raw.toString());
     } catch {
       return;
     }
+    if (!isClientMessage(parsed)) return;
+    const msg = parsed;
 
     console.log('WS message:', msg.type, JSON.stringify(msg).slice(0, 200));
 
@@ -145,7 +147,7 @@ wss.on('connection', (ws: WebSocket) => {
       }
       const agentId = clientAgents.get(ws);
       if (agentId) {
-        redisStore.updateLastActivity(agentId);
+        await redisStore.updateLastActivity(agentId);
       }
       return;
     }
@@ -277,7 +279,7 @@ wss.on('connection', (ws: WebSocket) => {
         }
         baseBroadcast(broadcastMsg);
       };
-      executeTask(agentSession, msg.content, taskBroadcast);
+      await executeTask(agentSession, msg.content, taskBroadcast);
 
     } else if (msg.type === 'restart') {
       const agentId = msg.agentId;
@@ -349,7 +351,7 @@ wss.on('connection', (ws: WebSocket) => {
       redisStore.pushMessage(agentId, exploreMsg).catch(() => {});
 
       const exploreBroadcast = sessionManager.makeBroadcast(agentId);
-      executeExplore(agentSession, agent?.context || null, exploreBroadcast);
+      await executeExplore(agentSession, agent?.context || null, exploreBroadcast);
 
     } else if (msg.type === 'taskFeedback') {
       const agentId = clientAgents.get(ws);
@@ -411,6 +413,12 @@ wss.on('connection', (ws: WebSocket) => {
       }
       return;
     }
+  };
+
+  ws.on('message', (raw: Buffer) => {
+    void handleMessage(raw).catch((err: unknown) => {
+      console.error('[WS] Message handler error:', err);
+    });
   });
 
   ws.on('close', () => {
