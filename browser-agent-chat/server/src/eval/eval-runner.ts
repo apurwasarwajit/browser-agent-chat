@@ -12,8 +12,74 @@ import { classifyError } from './error-analyzer.js';
 
 type EvalBroadcast = (msg: ServerMessage) => void;
 
+function positiveIntFromEnv(name: string, fallback: number): number {
+  const value = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+const MAX_CONCURRENT_EVAL_RUNS = positiveIntFromEnv('MAX_CONCURRENT_EVAL_RUNS', 3);
+const MAX_CONCURRENT_EVAL_RUNS_PER_USER = positiveIntFromEnv('MAX_CONCURRENT_EVAL_RUNS_PER_USER', 1);
+const EVAL_RUN_RATE_LIMIT = positiveIntFromEnv('EVAL_RUN_RATE_LIMIT', 10);
+const EVAL_RUN_GLOBAL_RATE_LIMIT = positiveIntFromEnv('EVAL_RUN_GLOBAL_RATE_LIMIT', 30);
+const EVAL_RUN_RATE_WINDOW_MS = positiveIntFromEnv('EVAL_RUN_RATE_WINDOW_MS', 60_000);
+
+interface EvalRunState {
+  cancelled: boolean;
+  userId: string;
+}
+
 // Active runs tracked for cancellation
-const activeRuns = new Map<string, { cancelled: boolean }>();
+const activeRuns = new Map<string, EvalRunState>();
+const pendingRunsByUser = new Map<string, number>();
+const recentRunStartsByUser = new Map<string, number[]>();
+let recentGlobalRunStarts: number[] = [];
+
+export class EvalRunLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EvalRunLimitError';
+  }
+}
+
+function reserveEvalRunSlot(userId: string): () => void {
+  const pendingTotal = [...pendingRunsByUser.values()].reduce((total, count) => total + count, 0);
+  const pendingForUser = pendingRunsByUser.get(userId) ?? 0;
+  const activeForUser = [...activeRuns.values()].filter(run => run.userId === userId).length;
+
+  if (activeRuns.size + pendingTotal >= MAX_CONCURRENT_EVAL_RUNS) {
+    throw new EvalRunLimitError('The server is already running the maximum number of evals');
+  }
+  if (activeForUser + pendingForUser >= MAX_CONCURRENT_EVAL_RUNS_PER_USER) {
+    throw new EvalRunLimitError('You already have the maximum number of active eval runs');
+  }
+
+  const now = Date.now();
+  recentGlobalRunStarts = recentGlobalRunStarts
+    .filter(startedAt => startedAt > now - EVAL_RUN_RATE_WINDOW_MS);
+  if (recentGlobalRunStarts.length >= EVAL_RUN_GLOBAL_RATE_LIMIT) {
+    throw new EvalRunLimitError('The server eval run rate limit was exceeded; try again later');
+  }
+
+  const recentStarts = (recentRunStartsByUser.get(userId) ?? [])
+    .filter(startedAt => startedAt > now - EVAL_RUN_RATE_WINDOW_MS);
+  if (recentStarts.length >= EVAL_RUN_RATE_LIMIT) {
+    recentRunStartsByUser.set(userId, recentStarts);
+    throw new EvalRunLimitError('Eval run rate limit exceeded; try again later');
+  }
+
+  recentRunStartsByUser.set(userId, [...recentStarts, now]);
+  recentGlobalRunStarts.push(now);
+  pendingRunsByUser.set(userId, pendingForUser + 1);
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const pending = pendingRunsByUser.get(userId) ?? 0;
+    if (pending <= 1) pendingRunsByUser.delete(userId);
+    else pendingRunsByUser.set(userId, pending - 1);
+  };
+}
 
 export function cancelRun(runId: string): boolean {
   const run = activeRuns.get(runId);
@@ -26,15 +92,22 @@ export function cancelRun(runId: string): boolean {
 
 export async function startEvalRun(
   agentId: string,
+  userId: string,
   trigger: EvalRunTrigger,
   broadcast: EvalBroadcast,
   tags?: string[],
 ): Promise<EvalRun | null> {
-  // Create the run record
-  const run = await createEvalRun(agentId, trigger);
+  const releaseReservation = reserveEvalRunSlot(userId);
+  let run: EvalRun | null;
+  try {
+    // Create the run record while the slot is reserved to prevent concurrent requests racing the limits.
+    run = await createEvalRun(agentId, trigger);
+  } finally {
+    releaseReservation();
+  }
   if (!run) return null;
 
-  const runState = { cancelled: false };
+  const runState: EvalRunState = { cancelled: false, userId };
   activeRuns.set(run.id, runState);
 
   // Load eval cases
@@ -67,7 +140,7 @@ async function runCasesSequentially(
   agentId: string,
   cases: EvalCase[],
   broadcast: EvalBroadcast,
-  runState: { cancelled: boolean },
+  runState: EvalRunState,
 ): Promise<void> {
   let passed = 0;
   let failed = 0;

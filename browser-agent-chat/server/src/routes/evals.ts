@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireAuth } from '../auth.js';
+import { requireAuth, type AuthenticatedRequest } from '../auth.js';
 import {
   listEvalCases,
   createEvalCase,
@@ -12,7 +12,7 @@ import {
   updateAgentEvalSchedule,
 } from '../db.js';
 import { CheckArraySchema } from '../eval/checks.js';
-import { startEvalRun, cancelRun } from '../eval/eval-runner.js';
+import { startEvalRun, cancelRun, EvalRunLimitError } from '../eval/eval-runner.js';
 import { seedEvalCases } from '../eval/seed.js';
 import type { ServerMessage, Check } from '../types.js';
 
@@ -108,6 +108,7 @@ router.delete('/cases/:caseId', requireAuth, async (req, res) => {
 // POST /api/projects/:id/evals/run — trigger a new eval run
 router.post('/run', requireAuth, async (req, res) => {
   const agentId = req.params.id as string;
+  const { userId } = req as AuthenticatedRequest;
   const { trigger = 'manual', tags } = req.body;
 
   const validTriggers = ['manual', 'scheduled', 'ci'];
@@ -118,7 +119,16 @@ router.post('/run', requireAuth, async (req, res) => {
 
   const parsedTags = Array.isArray(tags) ? tags as string[] : undefined;
 
-  const run = await startEvalRun(agentId, trigger, broadcast, parsedTags);
+  let run;
+  try {
+    run = await startEvalRun(agentId, userId, trigger, broadcast, parsedTags);
+  } catch (err) {
+    if (err instanceof EvalRunLimitError) {
+      res.status(429).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
   if (!run) { res.status(500).json({ error: 'Failed to start eval run' }); return; }
   res.status(201).json({ run });
 });

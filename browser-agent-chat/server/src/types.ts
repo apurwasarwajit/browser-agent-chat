@@ -422,15 +422,14 @@ export interface StartupMetrics {
 
 // === Eval Framework Types ===
 
-export type CheckType = 'url_matches' | 'element_exists' | 'element_absent' | 'text_contains' | 'page_title' | 'custom_js';
+export type CheckType = 'url_matches' | 'element_exists' | 'element_absent' | 'text_contains' | 'page_title';
 
 export type Check =
   | { type: 'url_matches'; pattern: string }
   | { type: 'element_exists'; selector: string }
   | { type: 'element_absent'; selector: string }
   | { type: 'text_contains'; selector: string; text: string }
-  | { type: 'page_title'; pattern: string }
-  | { type: 'custom_js'; script: string; expected: any };
+  | { type: 'page_title'; pattern: string };
 
 export type EvalCaseSourceType = 'feature' | 'flow' | 'finding' | 'manual';
 export type EvalCaseStatus = 'active' | 'disabled';
