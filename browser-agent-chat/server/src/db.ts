@@ -28,13 +28,14 @@ export async function createAgent(
   return data;
 }
 
-export async function getAgent(agentId: string): Promise<Agent | null> {
+export async function getAgent(agentId: string, userId?: string): Promise<Agent | null> {
   if (!isSupabaseEnabled()) return null;
-  const { data, error } = await supabase!
+  let query = supabase!
     .from('agents')
     .select('*')
-    .eq('id', agentId)
-    .single();
+    .eq('id', agentId);
+  if (userId) query = query.eq('user_id', userId);
+  const { data, error } = await query.single();
   if (error) return null;
   return data;
 }
