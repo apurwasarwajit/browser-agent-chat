@@ -20,6 +20,7 @@ export function isSupabaseEnabled(): boolean {
 
 export interface AuthenticatedUser {
   id: string;
+  email: string;
   githubUsername: string;
 }
 
@@ -40,5 +41,5 @@ export async function verifyToken(token: string): Promise<AuthenticatedUser> {
     throw new Error('User not in allowlist');
   }
 
-  return { id: data.user.id, githubUsername };
+  return { id: data.user.id, email: data.user.email ?? '', githubUsername };
 }
