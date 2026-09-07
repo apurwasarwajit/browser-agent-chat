@@ -113,7 +113,8 @@ router.put('/:id', requireAuth, async (req, res) => {
 // Delete agent
 router.delete('/:id', requireAuth, async (req, res) => {
   const agentId = req.params.id as string;
-  const success = await deleteAgent(agentId);
+  const { userId } = req as AuthenticatedRequest;
+  const success = await deleteAgent(agentId, userId);
   if (!success) { res.status(404).json({ error: 'Agent not found' }); return; }
   res.status(204).send();
 });

@@ -64,10 +64,16 @@ export async function updateAgent(
   return data;
 }
 
-export async function deleteAgent(agentId: string): Promise<boolean> {
+export async function deleteAgent(agentId: string, userId: string): Promise<boolean> {
   if (!isSupabaseEnabled()) return false;
-  const { error } = await supabase!.from('agents').delete().eq('id', agentId);
-  return !error;
+  const { data, error } = await supabase!
+    .from('agents')
+    .delete()
+    .eq('id', agentId)
+    .eq('user_id', userId)
+    .select('id')
+    .maybeSingle();
+  return !error && data !== null;
 }
 
 export async function getAgentListStats(agentIds: string[]): Promise<Map<string, { findingsCount: number; lastSessionAt: string | null }>> {
