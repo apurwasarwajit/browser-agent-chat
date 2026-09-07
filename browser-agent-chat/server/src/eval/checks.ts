@@ -9,7 +9,6 @@ export const CheckSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('element_absent'), selector: z.string() }),
   z.object({ type: z.literal('text_contains'), selector: z.string(), text: z.string() }),
   z.object({ type: z.literal('page_title'), pattern: z.string() }),
-  z.object({ type: z.literal('custom_js'), script: z.string(), expected: z.any() }),
 ]);
 
 export const CheckArraySchema = z.array(CheckSchema);
@@ -74,12 +73,6 @@ async function runSingleCheck(page: Page, check: Check): Promise<CheckResult> {
       return { check, passed, actual: title };
     }
 
-    case 'custom_js': {
-      const result = await page.evaluate(check.script);
-      const passed = JSON.stringify(result) === JSON.stringify(check.expected);
-      return { check, passed, actual: JSON.stringify(result) };
-    }
-
     default: {
       const _exhaustive: never = check;
       throw new Error(`Unknown check type: ${(_exhaustive as Check).type}`);
@@ -90,9 +83,7 @@ async function runSingleCheck(page: Page, check: Check): Promise<CheckResult> {
 export function summarizeChecks(results: CheckResult[]): Record<string, boolean> {
   const summary: Record<string, boolean> = {};
   for (const r of results) {
-    const key = r.check.type === 'custom_js'
-      ? `custom_js`
-      : `${r.check.type}:${'pattern' in r.check ? r.check.pattern : 'selector' in r.check ? r.check.selector : ''}`;
+    const key = `${r.check.type}:${'pattern' in r.check ? r.check.pattern : 'selector' in r.check ? r.check.selector : ''}`;
     summary[key] = r.passed;
   }
   return summary;
