@@ -25,7 +25,17 @@ export default function ChatPanel({
   onSendTask, onFeedback,
 }: ChatPanelProps) {
   const { getAccessToken } = useAuth();
-  const { pendingCredentialRequest, sendCredentialProvided, feedbackAck, sessionWarning, sessionEvicted, sendRestart, startAgent } = useWS();
+  const {
+    pendingCredentialRequest,
+    sendCredentialProvided,
+    pendingActionConfirmation,
+    sendActionConfirmation,
+    feedbackAck,
+    sessionWarning,
+    sessionEvicted,
+    sendRestart,
+    startAgent,
+  } = useWS();
 
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -187,6 +197,31 @@ export default function ChatPanel({
             </button>
             <button className="chat-cred-form-skip" onClick={handleCredentialSkip} disabled={credSaving}>
               Skip
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pendingActionConfirmation && (
+        <div className="chat-cred-form">
+          <div className="chat-cred-form-title">Action confirmation required</div>
+          <div>
+            The agent wants to perform <strong>{pendingActionConfirmation.action}</strong> on{' '}
+            <strong>{pendingActionConfirmation.target}</strong> at {pendingActionConfirmation.origin} because{' '}
+            {pendingActionConfirmation.reason}. The target label is untrusted page content.
+          </div>
+          <div className="chat-cred-form-actions">
+            <button
+              className="chat-cred-form-save"
+              onClick={() => sendActionConfirmation(pendingActionConfirmation.confirmationId, true)}
+            >
+              Allow once
+            </button>
+            <button
+              className="chat-cred-form-skip"
+              onClick={() => sendActionConfirmation(pendingActionConfirmation.confirmationId, false)}
+            >
+              Deny
             </button>
           </div>
         </div>

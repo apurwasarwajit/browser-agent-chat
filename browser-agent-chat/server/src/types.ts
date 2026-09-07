@@ -342,6 +342,7 @@ export type ClientMessage =
   | { type: 'explore'; agentId: string }
   | { type: 'ping' }
   | { type: 'taskFeedback'; task_id: string; rating: FeedbackRating; correction?: string }
+  | { type: 'action_confirmation'; confirmationId: string; approved: boolean }
   | { type: 'credential_provided'; credentialId: string };
 
 export type ServerMessage =
@@ -366,6 +367,7 @@ export type ServerMessage =
   | { type: 'patternStale'; name: string; reason: string }
   | { type: 'feedbackAck'; taskId: string; rating: FeedbackRating; clustered: boolean; clusterName?: string; clusterProgress?: { current: number; needed: number } }
   | { type: 'credential_needed'; agentId: string; domain: string; strategy: string }
+  | { type: 'action_confirmation_required'; confirmationId: string; action: string; target: string; reason: string; origin: string }
   | { type: 'session_evicted'; agentId: string; reason: 'capacity' }
   | { type: 'session_expiring'; remainingSeconds: number }
   | { type: 'session_new'; agentId: string };

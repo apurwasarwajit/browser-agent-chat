@@ -12,6 +12,14 @@ interface FeedbackAckData {
   clusterProgress?: { current: number; needed: number };
 }
 
+interface PendingActionConfirmation {
+  confirmationId: string;
+  action: string;
+  target: string;
+  reason: string;
+  origin: string;
+}
+
 interface WebSocketState {
   connected: boolean;
   status: AgentStatus;
@@ -34,6 +42,8 @@ interface WebSocketState {
   decrementSuggestionCount: () => void;
   pendingCredentialRequest: { agentId: string; domain: string; strategy: string } | null;
   sendCredentialProvided: (credentialId: string) => void;
+  pendingActionConfirmation: PendingActionConfirmation | null;
+  sendActionConfirmation: (confirmationId: string, approved: boolean) => void;
   sessionWarning: string | null;
   sessionEvicted: boolean;
 }
@@ -68,6 +78,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     durationMs: number;
   } | null>(null);
   const [pendingCredentialRequest, setPendingCredentialRequest] = useState<{ agentId: string; domain: string; strategy: string } | null>(null);
+  const [pendingActionConfirmation, setPendingActionConfirmation] = useState<PendingActionConfirmation | null>(null);
   const [feedbackAck, setFeedbackAck] = useState<FeedbackAckData | null>(null);
   const [sessionWarning, setSessionWarning] = useState<string | null>(null);
   const [sessionEvicted, setSessionEvicted] = useState<boolean>(false);
@@ -158,6 +169,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         const durationMs = (msg as any).durationMs ?? 0;
         setLastCompletedTask({ taskId, success: (msg as any).success, stepCount, durationMs });
         setActiveTaskId(null);
+        setPendingActionConfirmation(null);
         // Don't add system message here — TaskCompletionCard handles display
         break;
       }
@@ -251,6 +263,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         activeAgentRef.current = null;
         setActiveAgentId(null);
         setPendingCredentialRequest(null);
+        setPendingActionConfirmation(null);
         break;
       case 'taskInterrupted':
         setMessages(prev => [...prev, {
@@ -266,10 +279,22 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         setPendingCredentialRequest({ agentId: m.agentId, domain: m.domain, strategy: m.strategy });
         break;
       }
+      case 'action_confirmation_required': {
+        const confirmation = msg as PendingActionConfirmation & { type: 'action_confirmation_required' };
+        setPendingActionConfirmation({
+          confirmationId: confirmation.confirmationId,
+          action: confirmation.action,
+          target: confirmation.target,
+          reason: confirmation.reason,
+          origin: confirmation.origin,
+        });
+        break;
+      }
       case 'session_evicted':
         setStatus('disconnected');
         setSessionEvicted(true);
         activeAgentRef.current = null;
+        setPendingActionConfirmation(null);
         break;
       case 'session_expiring':
         setSessionWarning(`Session expires in ${Math.floor((msg as any).remainingSeconds / 60)} minutes.`);
@@ -285,6 +310,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
         setLastCompletedTask(null);
         setFeedbackAck(null);
         setPendingCredentialRequest(null);
+        setPendingActionConfirmation(null);
         setSessionWarning(null);
         setSessionEvicted(false);
         break;
@@ -302,6 +328,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       setActiveTaskId(null);
       setLastCompletedTask(null);
       setFeedbackAck(null);
+      setPendingActionConfirmation(null);
       lastUrlRef.current = null;
     }
 
@@ -346,6 +373,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     ws.onclose = () => {
       setConnected(false);
       setPendingCredentialRequest(null);
+      setPendingActionConfirmation(null);
       if (heartbeatRef.current) {
         clearInterval(heartbeatRef.current);
         heartbeatRef.current = null;
@@ -430,6 +458,11 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     setPendingCredentialRequest(null);
   }, []);
 
+  const sendActionConfirmation = useCallback((confirmationId: string, approved: boolean) => {
+    send({ type: 'action_confirmation', confirmationId, approved });
+    setPendingActionConfirmation(null);
+  }, [send]);
+
   const value: WebSocketState = {
     connected,
     status,
@@ -452,6 +485,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     feedbackAck,
     pendingCredentialRequest,
     sendCredentialProvided,
+    pendingActionConfirmation,
+    sendActionConfirmation,
     sessionWarning,
     sessionEvicted,
   };
