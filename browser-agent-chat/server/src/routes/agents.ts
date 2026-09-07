@@ -150,4 +150,23 @@ router.get('/:id/tasks/:tid/steps', requireAuth, async (req, res) => {
   }
 });
 
+// Human-readable label for an agent, shown at the top of the diagnostics report.
+function agentLabel(agent: { name: string; url: string }): string {
+  return `${agent.name} (${agent.url})`;
+}
+
+// GET diagnostics report for an agent
+router.get('/:id/report', requireAuth, async (req, res) => {
+  const agentId = req.params.id as string;
+  const agent = await getAgent(agentId);
+  if (!agent) { res.status(404).json({ error: 'Agent not found' }); return; }
+
+  // Return the full agent record so the diagnostics dashboard can render everything.
+  res.json({
+    label: agentLabel(agent),
+    agent,
+    generatedAt: new Date().toISOString(),
+  });
+});
+
 export default router;
