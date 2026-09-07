@@ -344,6 +344,44 @@ export type ClientMessage =
   | { type: 'taskFeedback'; task_id: string; rating: FeedbackRating; correction?: string }
   | { type: 'credential_provided'; credentialId: string };
 
+function hasExactKeys(
+  value: Record<string, unknown>,
+  required: string[],
+  optional: string[] = [],
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return required.every(key => Object.hasOwn(value, key))
+    && Object.keys(value).every(key => allowed.has(key));
+}
+
+export function isClientMessage(value: unknown): value is ClientMessage {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+
+  const msg = value as Record<string, unknown>;
+  switch (msg.type) {
+    case 'start':
+      return hasExactKeys(msg, ['type', 'agentId'], ['resumeUrl'])
+        && typeof msg.agentId === 'string'
+        && (msg.resumeUrl === undefined || typeof msg.resumeUrl === 'string');
+    case 'restart':
+    case 'explore':
+      return hasExactKeys(msg, ['type', 'agentId']) && typeof msg.agentId === 'string';
+    case 'task':
+      return hasExactKeys(msg, ['type', 'content']) && typeof msg.content === 'string';
+    case 'ping':
+      return hasExactKeys(msg, ['type']);
+    case 'taskFeedback':
+      return hasExactKeys(msg, ['type', 'task_id', 'rating'], ['correction'])
+        && typeof msg.task_id === 'string'
+        && (msg.rating === 'positive' || msg.rating === 'negative')
+        && (msg.correction === undefined || typeof msg.correction === 'string');
+    case 'credential_provided':
+      return hasExactKeys(msg, ['type', 'credentialId']) && typeof msg.credentialId === 'string';
+    default:
+      return false;
+  }
+}
+
 export type ServerMessage =
   | { type: 'thought'; content: string }
   | { type: 'action'; action: string; target?: string }
