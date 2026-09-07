@@ -16,7 +16,7 @@ import vaultRouter, { agentCredentialsRouter } from './routes/vault.js';
 import { executeTask, executeExplore, handleLoginDetection } from './agent.js';
 import { pendingCredentialRequests } from './vault.js';
 import { getAgent, createSession, createTask, updateTask, getTaskClusterByTask } from './db.js';
-import { isSupabaseEnabled } from './supabase.js';
+import { isSupabaseEnabled, verifyToken } from './supabase.js';
 import * as sessionManager from './sessionManager.js';
 import * as redisStore from './redisStore.js';
 import * as browserManager from './browserManager.js';
@@ -77,7 +77,32 @@ app.use('/api/vault', vaultRouter);
 app.use('/api/agents/:id/credentials', agentCredentialsRouter);
 
 // WebSocket server
-const wss = new WebSocketServer({ server });
+const WS_AUTH_PROTOCOL = 'authorization';
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols: protocols => protocols.has(WS_AUTH_PROTOCOL) ? WS_AUTH_PROTOCOL : false,
+});
+
+server.on('upgrade', async (request, socket, head) => {
+  const requestedProtocols = request.headers['sec-websocket-protocol']
+    ?.split(',')
+    .map(protocol => protocol.trim());
+  const token = requestedProtocols?.[0] === WS_AUTH_PROTOCOL ? requestedProtocols[1] : undefined;
+
+  try {
+    if (!token) throw new Error('Missing token');
+    const user = await verifyToken(token);
+    if (socket.destroyed) return;
+
+    wss.handleUpgrade(request, socket, head, ws => {
+      clientUserIds.set(ws, user.id);
+      wss.emit('connection', ws, request);
+    });
+  } catch {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+  }
+});
 
 // Track which agent each client is associated with
 const clientAgents = new Map<WebSocket, string>();
@@ -126,6 +151,18 @@ function makeChatMessage(type: ChatMessage['type'], content: string): ChatMessag
   return { id: crypto.randomUUID(), type, content, timestamp: Date.now() };
 }
 
+async function getOwnedAgent(ws: WebSocket, agentId: string) {
+  const userId = clientUserIds.get(ws);
+  if (!userId) return null;
+
+  const agent = await getAgent(agentId);
+  return agent?.user_id === userId ? agent : null;
+}
+
+function sendAccessDenied(ws: WebSocket): void {
+  ws.send(JSON.stringify({ type: 'error', message: 'Agent not found or access denied' } as ServerMessage));
+}
+
 wss.on('connection', (ws: WebSocket) => {
   console.log('Client connected');
 
@@ -145,13 +182,20 @@ wss.on('connection', (ws: WebSocket) => {
       }
       const agentId = clientAgents.get(ws);
       if (agentId) {
-        redisStore.updateLastActivity(agentId);
+        const agent = await getOwnedAgent(ws, agentId);
+        if (agent) redisStore.updateLastActivity(agentId);
       }
       return;
     }
 
     if (msg.type === 'start') {
       console.log('[START] Starting agent for:', msg.agentId);
+
+      const agent = await getOwnedAgent(ws, msg.agentId);
+      if (!agent) {
+        sendAccessDenied(ws);
+        return;
+      }
 
       const prevAgentId = clientAgents.get(ws);
       if (prevAgentId && prevAgentId !== msg.agentId) {
@@ -181,16 +225,6 @@ wss.on('connection', (ws: WebSocket) => {
       clientAgents.set(ws, msg.agentId);
 
       try {
-        const agent = await getAgent(msg.agentId);
-        if (!agent) {
-          clientAgents.delete(ws);
-          ws.send(JSON.stringify({ type: 'error', message: 'Agent not found' } as ServerMessage));
-          ws.send(JSON.stringify({ type: 'status', status: 'disconnected' } as ServerMessage));
-          return;
-        }
-
-        clientUserIds.set(ws, agent.user_id);
-
         // Ensure capacity before creating new browser
         await sessionManager.ensureCapacity();
 
@@ -226,6 +260,10 @@ wss.on('connection', (ws: WebSocket) => {
       const agentId = clientAgents.get(ws);
       if (!agentId) {
         ws.send(JSON.stringify({ type: 'error', message: 'No active session. Start an agent first.' } as ServerMessage));
+        return;
+      }
+      if (!await getOwnedAgent(ws, agentId)) {
+        sendAccessDenied(ws);
         return;
       }
 
@@ -283,6 +321,12 @@ wss.on('connection', (ws: WebSocket) => {
       const agentId = msg.agentId;
       console.log('[RESTART] Restarting agent:', agentId);
 
+      const agent = await getOwnedAgent(ws, agentId);
+      if (!agent) {
+        sendAccessDenied(ws);
+        return;
+      }
+
       // Use beforeEvict hook for task cleanup (same as eviction path)
       await sessionManager.callBeforeEvictHook(agentId);
       await sessionManager.destroySession(agentId);
@@ -290,13 +334,6 @@ wss.on('connection', (ws: WebSocket) => {
       await sessionManager.ensureCapacity();
 
       try {
-        const agent = await getAgent(agentId);
-        if (!agent) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Agent not found' } as ServerMessage));
-          return;
-        }
-
-        clientUserIds.set(ws, agent.user_id);
         clientAgents.set(ws, agentId);
 
         const dbSessionId = await createSession(agent.id);
@@ -331,15 +368,15 @@ wss.on('connection', (ws: WebSocket) => {
         return;
       }
 
-      const agentSession = sessionManager.getAgent(agentId);
-      if (!agentSession) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Session expired.' } as ServerMessage));
+      const agent = await getOwnedAgent(ws, agentId);
+      if (!agent) {
+        sendAccessDenied(ws);
         return;
       }
 
-      const agent = await getAgent(msg.agentId);
-      if (!agent) {
-        ws.send(JSON.stringify({ type: 'error', message: 'Agent not found.' } as ServerMessage));
+      const agentSession = sessionManager.getAgent(agentId);
+      if (!agentSession) {
+        ws.send(JSON.stringify({ type: 'error', message: 'Session expired.' } as ServerMessage));
         return;
       }
 
@@ -354,6 +391,10 @@ wss.on('connection', (ws: WebSocket) => {
     } else if (msg.type === 'taskFeedback') {
       const agentId = clientAgents.get(ws);
       if (!agentId) return;
+      if (!await getOwnedAgent(ws, agentId)) {
+        sendAccessDenied(ws);
+        return;
+      }
 
       const activeTask = activeTasks.get(agentId);
       const agentSession = sessionManager.getAgent(agentId);
@@ -405,6 +446,10 @@ wss.on('connection', (ws: WebSocket) => {
     } else if (msg.type === 'credential_provided') {
       const agentId = clientAgents.get(ws);
       if (!agentId) return;
+      if (!await getOwnedAgent(ws, agentId)) {
+        sendAccessDenied(ws);
+        return;
+      }
       const pending = pendingCredentialRequests.get(agentId);
       if (pending) {
         pending.resolve(msg.credentialId);

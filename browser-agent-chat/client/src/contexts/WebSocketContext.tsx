@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import type { ClientMessage, ServerMessage, AgentStatus, ChatMessage, Finding, Suggestion } from '../types';
+import { supabase } from '../lib/supabase';
 
 const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
 const HEARTBEAT_INTERVAL = 30_000;
@@ -319,10 +320,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const startAgentRef = useRef(startAgent);
   startAgentRef.current = startAgent;
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+  const connect = useCallback(async () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
 
-    const ws = new WebSocket(WS_URL);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      reconnectTimeoutRef.current = setTimeout(connect, 3000);
+      return;
+    }
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
+
+    const ws = new WebSocket(WS_URL, ['authorization', session.access_token]);
 
     ws.onopen = () => {
       setConnected(true);
