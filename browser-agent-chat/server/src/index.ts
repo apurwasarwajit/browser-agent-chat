@@ -13,7 +13,7 @@ import mapRouter from './routes/map.js';
 import tracesRouter from './routes/traces.js';
 import observabilityRouter from './routes/observability.js';
 import vaultRouter, { agentCredentialsRouter } from './routes/vault.js';
-import { executeTask, executeExplore, handleLoginDetection } from './agent.js';
+import { executeTask, executeExplore, handleLoginDetection, isAllowedOrigin } from './agent.js';
 import { pendingCredentialRequests } from './vault.js';
 import { getAgent, createSession, createTask, updateTask, getTaskClusterByTask } from './db.js';
 import { isSupabaseEnabled } from './supabase.js';
@@ -196,8 +196,12 @@ wss.on('connection', (ws: WebSocket) => {
 
         const dbSessionId = await createSession(agent.id);
 
+        const allowedOrigin = new URL(agent.url).origin;
+        const startUrl = msg.resumeUrl && isAllowedOrigin(msg.resumeUrl, allowedOrigin)
+          ? msg.resumeUrl
+          : agent.url;
         const agentSession = await sessionManager.createSession(
-          msg.agentId, msg.resumeUrl || agent.url, dbSessionId
+          msg.agentId, startUrl, dbSessionId
         );
 
         sessionManager.addClient(msg.agentId, ws);
@@ -402,6 +406,11 @@ wss.on('connection', (ws: WebSocket) => {
         activeTasks.delete(agentId);
       }
 
+    } else if (msg.type === 'action_confirmation') {
+      const agentId = clientAgents.get(ws);
+      if (!agentId) return;
+      sessionManager.getAgent(agentId)?.confirmAction(msg.confirmationId, msg.approved);
+      return;
     } else if (msg.type === 'credential_provided') {
       const agentId = clientAgents.get(ws);
       if (!agentId) return;
