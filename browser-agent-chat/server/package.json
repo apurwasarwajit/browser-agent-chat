@@ -22,6 +22,7 @@
     "magnitude-core": "0.2.26",
     "node-cron": "^4.2.1",
     "openai": "^6.29.0",
+    "re2-wasm": "^1.0.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
