@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { requireAuth } from '../auth.js';
+import { requireAuth, type AuthenticatedRequest } from '../auth.js';
 import {
+  getAgent,
   listEvalCases,
   createEvalCase,
   updateEvalCase,
@@ -40,6 +41,7 @@ router.get('/cases', requireAuth, async (req, res) => {
 
 // POST /api/projects/:id/evals/cases — create eval case
 router.post('/cases', requireAuth, async (req, res) => {
+  const { userId } = req as AuthenticatedRequest;
   const agentId = req.params.id as string;
   const { name, task_prompt, source_type, source_id, checks, llm_judge_criteria, tags, status } = req.body;
 
@@ -52,6 +54,12 @@ router.post('/cases', requireAuth, async (req, res) => {
   const checksResult = CheckArraySchema.safeParse(checks ?? []);
   if (!checksResult.success) {
     res.status(400).json({ error: 'Invalid checks', details: checksResult.error.issues });
+    return;
+  }
+
+  const agent = await getAgent(agentId, userId);
+  if (!agent) {
+    res.status(403).json({ error: 'Forbidden' });
     return;
   }
 
