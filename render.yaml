@@ -19,6 +19,8 @@ services:
         sync: false
       - key: ALLOWED_GITHUB_USERS
         sync: false
+      - key: SLACK_API_TOKEN
+        sync: false
 
   # Frontend React app
   - type: web
