@@ -1,14 +1,52 @@
 import { z } from 'zod';
 import type { Page } from 'playwright';
+import { RE2 } from 're2-wasm';
+import safeRegex from 'safe-regex2';
 import type { Check } from '../types.js';
+
+const MAX_PATTERN_LENGTH = 512;
+const MAX_REGEX_INPUT_LENGTH = 16_384;
+
+function compileSafePattern(pattern: string): RE2 {
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new Error(`Regex pattern must be at most ${MAX_PATTERN_LENGTH} characters`);
+  }
+  if (!safeRegex(pattern)) {
+    throw new Error('Regex pattern contains unsafe or invalid repetition');
+  }
+
+  try {
+    return new RE2(pattern, 'u');
+  } catch {
+    throw new Error('Regex pattern uses invalid or unsupported syntax');
+  }
+}
+
+const SafePatternSchema = z.string().superRefine((pattern, ctx) => {
+  try {
+    compileSafePattern(pattern);
+  } catch (err) {
+    ctx.addIssue({
+      code: 'custom',
+      message: err instanceof Error ? err.message : 'Invalid regex pattern',
+    });
+  }
+});
+
+function testSafePattern(pattern: string, input: string): boolean {
+  if (input.length > MAX_REGEX_INPUT_LENGTH) {
+    throw new Error(`Regex input must be at most ${MAX_REGEX_INPUT_LENGTH} characters`);
+  }
+  return compileSafePattern(pattern).test(input);
+}
 
 // Zod schema for validating Check objects from user input
 export const CheckSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('url_matches'), pattern: z.string() }),
+  z.object({ type: z.literal('url_matches'), pattern: SafePatternSchema }),
   z.object({ type: z.literal('element_exists'), selector: z.string() }),
   z.object({ type: z.literal('element_absent'), selector: z.string() }),
   z.object({ type: z.literal('text_contains'), selector: z.string(), text: z.string() }),
-  z.object({ type: z.literal('page_title'), pattern: z.string() }),
+  z.object({ type: z.literal('page_title'), pattern: SafePatternSchema }),
   z.object({ type: z.literal('custom_js'), script: z.string(), expected: z.any() }),
 ]);
 
@@ -44,7 +82,7 @@ async function runSingleCheck(page: Page, check: Check): Promise<CheckResult> {
   switch (check.type) {
     case 'url_matches': {
       const url = page.url();
-      const passed = new RegExp(check.pattern).test(url);
+      const passed = testSafePattern(check.pattern, url);
       return { check, passed, actual: url };
     }
 
@@ -70,7 +108,7 @@ async function runSingleCheck(page: Page, check: Check): Promise<CheckResult> {
 
     case 'page_title': {
       const title = await page.title();
-      const passed = new RegExp(check.pattern).test(title);
+      const passed = testSafePattern(check.pattern, title);
       return { check, passed, actual: title };
     }
 
