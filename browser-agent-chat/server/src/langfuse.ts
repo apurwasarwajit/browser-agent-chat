@@ -143,10 +143,11 @@ export async function fetchAgentTraces(
   };
 }
 
-export async function fetchTraceDetail(traceId: string): Promise<TraceDetail> {
+export async function fetchTraceDetail(traceId: string, agentId: string): Promise<TraceDetail | null> {
   if (!langfuse) throw new Error('Langfuse not initialized');
 
   const t = await langfuse.api.traceGet(traceId);
+  if (!t.tags?.includes(`agent:${agentId}`)) return null;
 
   const observations: TraceObservation[] = (t.observations ?? []).map(obs => {
     const startMs = new Date(obs.startTime).getTime();

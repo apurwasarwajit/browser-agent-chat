@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { requireAuth } from '../auth.js';
+import { requireAuth, type AuthenticatedRequest } from '../auth.js';
+import { getAgent } from '../db.js';
 import { fetchAgentTraces, fetchTraceDetail, isLangfuseEnabled } from '../langfuse.js';
 import { supabase } from '../supabase.js';
 
@@ -69,10 +70,22 @@ router.get('/:traceId', requireAuth, async (req, res) => {
     return;
   }
 
+  const { userId } = req as AuthenticatedRequest;
+  const agentId = req.params.id as string;
   const traceId = req.params.traceId as string;
 
   try {
-    const detail = await fetchTraceDetail(traceId);
+    const agent = await getAgent(agentId);
+    if (!agent || agent.user_id !== userId) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
+    const detail = await fetchTraceDetail(traceId, agentId);
+    if (!detail) {
+      res.status(404).json({ error: 'Trace not found' });
+      return;
+    }
     res.json(detail);
   } catch (err) {
     console.error('[TRACES] Error fetching trace detail:', err);

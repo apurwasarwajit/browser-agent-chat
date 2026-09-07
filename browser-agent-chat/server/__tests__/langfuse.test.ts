@@ -2,17 +2,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockShutdownAsync = vi.fn().mockResolvedValue(undefined);
 const mockTrace = vi.fn();
+const mockTraceGet = vi.fn();
 
 vi.mock('langfuse', () => {
   return {
     Langfuse: class MockLangfuse {
       trace = mockTrace;
+      api = { traceGet: mockTraceGet };
       shutdownAsync = mockShutdownAsync;
     },
   };
 });
 
-import { initLangfuse, getLangfuse, isLangfuseEnabled, shutdownLangfuse } from '../src/langfuse.js';
+import { fetchTraceDetail, initLangfuse, getLangfuse, isLangfuseEnabled, shutdownLangfuse } from '../src/langfuse.js';
 
 describe('langfuse client', () => {
   beforeEach(() => {
@@ -58,5 +60,23 @@ describe('langfuse client', () => {
     // This won't actually reset to null in same process, but shutdownAsync
     // should still be callable without error
     await shutdownLangfuse();
+  });
+
+  it('returns trace detail only when tagged for the requested agent', async () => {
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-test';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-test';
+    initLangfuse();
+    mockTraceGet.mockResolvedValue({
+      id: 'trace-1',
+      name: 'task',
+      input: 'input',
+      output: { success: true },
+      timestamp: '2026-09-07T00:00:00.000Z',
+      tags: ['agent:agent-1'],
+      observations: [],
+    });
+
+    await expect(fetchTraceDetail('trace-1', 'agent-1')).resolves.toMatchObject({ id: 'trace-1' });
+    await expect(fetchTraceDetail('trace-1', 'agent-2')).resolves.toBeNull();
   });
 });
